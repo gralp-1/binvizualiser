@@ -2,12 +2,13 @@ package main
 
 import (
 	"fmt"
-	rl "github.com/gen2brain/raylib-go/raylib"
 	"log"
 	"math"
 	"os"
 	"strconv"
 	"strings"
+
+	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
 type Point struct {
@@ -84,10 +85,19 @@ func ReadLines(filename string) []string {
 	return strings.Split(string(f), "\n")
 }
 
+func Eventloop2D(drawerFunction func([]Point), points []Point) {
+	for !rl.WindowShouldClose() {
+		rl.BeginDrawing()
+		rl.ClearBackground(rl.Black)
+		drawerFunction(points)
+		rl.EndDrawing()
+	}
+}
+
 func Draw2DPoints(points []Point) {
 	// we're basically just drawing a 256x256 image
 	// Find the correct pixel size that will fill the window
-	pixelSize := math.Min(float64(rl.GetRenderWidth()-xMargin*2), float64(rl.GetRenderHeight()-yMargin*2)) / 256
+	pixelSize := math.Min(float64(screenWidth-xMargin*2), float64(screenWidth-yMargin*2)) / 256
 
 	// draw the points
 	for _, point := range points {
@@ -103,13 +113,44 @@ func Draw2DPoints(points []Point) {
 	}
 }
 
+func Eventloop3D(drawerFunction func([]Point), points []Point) {
+	// init camera
+	camera := rl.Camera3D{}
+	camera.Position = rl.NewVector3(10.0, 10.0, 10.0)
+	camera.Target = rl.NewVector3(0.0, 0.0, 0.0)
+	camera.Up = rl.NewVector3(0.0, 1.0, 0.0)
+	camera.Fovy = 45.0
+	camera.Projection = rl.CameraPerspective
+	for !rl.WindowShouldClose() {
+		rl.ClearBackground(rl.Black)
+		rl.UpdateCamera(&camera, rl.CameraFree)
+		rl.BeginDrawing()
+		rl.BeginMode3D(camera)
+		drawerFunction(points)
+		rl.EndMode3D()
+		rl.EndDrawing()
+	}
+}
+
 func Draw3DPoints(points []Point) {
-	// TODO
-	fmt.Println("3D")
+	for _, point := range points {
+		// TODO fix this at parse-time, I think it's something to do with the newline at the end
+		if len(point.Coordinate) == 0 {
+			continue
+		}
+		// TODO: might want to make the cube size adjustable
+		rl.DrawCube(
+			rl.NewVector3(float32(point.Coordinate[0])/10, float32(point.Coordinate[1])/10, float32(point.Coordinate[2])/10),
+			0.1,
+			0.1,
+			0.1,
+			rl.NewColor(0, 255, 0, point.Value))
+	}
 }
 
 func Draw4DPoints(points []Point) {
-	// TODO
+	// like drawing 3D but with a slider for the W axis (0..255) and it just draws the points with W = slider value
+	// probably...
 	fmt.Println("4D")
 }
 
@@ -119,25 +160,27 @@ func main() {
 	lines := ReadLines(os.Args[1])
 	ParseVizFileHeader(lines)
 	points := ParseVizFilePoints(lines)
-	fmt.Printf("%v\n", points[0])
-	fmt.Println(len(points))
-	// Raylib initialisation
+	fmt.Println("File:         ", os.Args[1])
+	fmt.Println("Dimension:    ", dimension)
+	fmt.Println("No. of points:", len(points))
+
 	var drawerFunction func([]Point)
+	var eventLoop func(func([]Point), []Point)
+	// probably too many code paths here, might find a better way to do this
 	switch dimension {
 	case 2:
+		eventLoop = Eventloop2D
 		drawerFunction = Draw2DPoints
 	case 3:
+		eventLoop = Eventloop3D
 		drawerFunction = Draw3DPoints
 	case 4:
+		eventLoop = Eventloop3D
 		drawerFunction = Draw4DPoints
 	default:
 		fmt.Println("what the fuck")
 	}
+	// Raylib initialisation
 	rl.InitWindow(screenWidth, screenHeight, "binvizualiser")
-	for !rl.WindowShouldClose() {
-		rl.BeginDrawing()
-		rl.ClearBackground(rl.Black)
-		drawerFunction(points)
-		rl.EndDrawing()
-	}
+	eventLoop(drawerFunction, points)
 }
