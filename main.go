@@ -5,9 +5,12 @@ import (
 	"log"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
+	rg "github.com/gen2brain/raylib-go/raygui"
 	rl "github.com/gen2brain/raylib-go/raylib"
 )
 
@@ -16,23 +19,37 @@ type Point struct {
 	Value      uint8
 }
 
+const MAJOR_VER = "0"
+const X_MARGIN = 20
+const Y_MARGIN = 20
+const CUBE_SIZE float32 = 0.1
+const MIN_BRIGHTNESS int = 10
+const MAX_POINTS = 100000
+const DEBUG_MODE = true
+
+var zoomSquareOnScreen bool = false
+var isZoomed bool = false
+var wValue uint8 = 0
 var dimension int
 
-const xMargin = 20
-const yMargin = 20
-
-var screenWidth int32 = 256*3 + xMargin*2
-var screenHeight int32 = 256*3 + yMargin*2
-
-const majorVersion = "0"
+func DrawDebugText(pointCount int) {
+	// NOTE: don't forget to add newlines
+	rl.DrawFPS(10, 10)
+	debugText := fmt.Sprintf("Dimension: %v\n", dimension)
+	debugText += fmt.Sprintf("Number of points: %v\n", pointCount)
+	if dimension == 2 {
+		debugText += fmt.Sprintf("Zoomed: %v\n", zoomSquareOnScreen)
+	}
+	rl.DrawText(debugText, 10, 30, 15, rl.White)
+}
 
 func ParseVizFileHeader(lines []string) {
 	// format:VERSION maj.min.patch (semver)
 	version := strings.Split(lines[0], " ")[1]
 	fileMajorVersion := strings.Split(version, ".")[0]
 	// check if the major version is the same
-	if fileMajorVersion != majorVersion {
-		log.Printf("Major version mismatch between %v and %v, probably won't work how you think it will, you have been warned", fileMajorVersion, majorVersion)
+	if fileMajorVersion != MAJOR_VER {
+		log.Printf("Major version mismatch between %v and %v, probably won't work how you think it will, you have been warned", fileMajorVersion, MAJOR_VER)
 	}
 
 	dim, err := strconv.ParseInt(strings.Split(lines[1], " ")[1], 10, 8)
@@ -76,6 +93,31 @@ func ParseVizFilePoints(lines []string) []Point {
 	return points
 }
 
+func FilterPoints(points []Point) []Point {
+	// if the value is less than 20, delete it
+	// TODO make this adjustable
+	filteredPoints := make([]Point, 0)
+	for _, point := range points {
+		if int(point.Value) > MIN_BRIGHTNESS {
+			filteredPoints = append(filteredPoints, point)
+		}
+	}
+	// sort the points by value
+	sort.Slice(filteredPoints, func(a, b int) bool {
+		return filteredPoints[a].Value > filteredPoints[b].Value
+	})
+	// turn the values into colours
+	// return the top maxPoints points
+	//
+	// remove empty points
+	for i := 0; i < len(filteredPoints); i++ {
+		if len(filteredPoints[i].Coordinate) == 0 {
+			filteredPoints = append(filteredPoints[:i], filteredPoints[i+1:]...)
+		}
+	}
+	return filteredPoints[:int(math.Min(float64(MAX_POINTS), float64(len(filteredPoints))))]
+}
+
 func ReadLines(filename string) []string {
 	f, err := os.ReadFile(filename)
 	if err != nil {
@@ -85,102 +127,158 @@ func ReadLines(filename string) []string {
 	return strings.Split(string(f), "\n")
 }
 
-func Eventloop2D(drawerFunction func([]Point), points []Point) {
+func Draw2D(points *[]Point) {
+	// we're basically just drawing a 256x256 image
+	// Find the correct pixel size that will fill the window
+	pixelSize := 4
+	var zoomStart rl.Vector2 = rl.Vector2{X: 0, Y: 0}
+	var zoomEnd rl.Vector2 = rl.Vector2{X: 0, Y: 0}
+	// TODO: center the image
 	for !rl.WindowShouldClose() {
 		rl.BeginDrawing()
 		rl.ClearBackground(rl.Black)
-		drawerFunction(points)
+
+		// draw the points
+		for _, point := range *points {
+			x := X_MARGIN + (int32(point.Coordinate[0]) * int32(pixelSize)) + int32(rl.GetScreenWidth()/2) - int32(256*int32(pixelSize)/2)
+			y := Y_MARGIN + (int32(point.Coordinate[1]) * int32(pixelSize)) + int32(rl.GetScreenHeight()/2) - int32(256*int32(pixelSize)/2)
+			if isZoomed {
+				// adjust them to be in the zoomed area
+				windowWidth := math.Abs(float64(zoomEnd.X - zoomStart.X))
+				windowHeight := math.Abs(float64(zoomEnd.Y - zoomStart.Y))
+				// adjust the x and y to be relative to the zoom start
+				x -= int32(zoomStart.X)
+				y -= int32(zoomStart.Y)
+				// scale them to be in the zoomed area
+				x = int32(float64(x) * (256 / windowWidth))
+				y = int32(float64(y) * (256 / windowHeight))
+				// adjust them to be relative to the screen
+				x += int32(zoomStart.X)
+				y += int32(zoomStart.Y)
+				pixelSize = int(float64(pixelSize) * (256 / windowWidth))
+			}
+			// centre this in the screen
+			rl.DrawRectangle(
+				x,                // X
+				y,                // Y
+				int32(pixelSize), // Width
+				int32(pixelSize), // Height
+				rl.NewColor(255, 255, 255, point.Value),
+			)
+			pixelSize = 4
+		}
+		// if the user stops right clicking, zoom in and set zoom end to their mouse pos
+		zoomSquareOnScreen = rl.IsKeyDown(rl.KeyQ)
+		if rl.IsKeyPressed(rl.KeyQ) {
+			zoomStart = rl.GetMousePosition()
+			isZoomed = false
+		}
+		if rl.IsKeyReleased(rl.KeyQ) {
+			zoomEnd = rl.GetMousePosition()
+			if zoomStart != zoomEnd {
+				isZoomed = true
+			}
+		}
+		if zoomSquareOnScreen {
+			rl.DrawRectangleLines(
+				int32(zoomStart.X),
+				int32(zoomStart.Y),
+				int32(rl.GetMousePosition().X)-int32(zoomStart.X),
+				int32(rl.GetMousePosition().Y)-int32(zoomStart.Y),
+				rl.Red)
+		}
+		if DEBUG_MODE {
+			DrawDebugText(len(*points))
+		}
 		rl.EndDrawing()
 	}
 }
 
-func Draw2DPoints(points []Point) {
-	// we're basically just drawing a 256x256 image
-	// Find the correct pixel size that will fill the window
-	pixelSize := math.Min(float64(screenWidth-xMargin*2), float64(screenWidth-yMargin*2)) / 256
-
-	// draw the points
-	for _, point := range points {
-		if len(point.Coordinate) == 0 {
-			continue
-		}
-		rl.DrawRectangle(
-			xMargin+(int32(point.Coordinate[0])*int32(pixelSize)), // X
-			yMargin+(int32(point.Coordinate[1])*int32(pixelSize)), // Y
-			int32(pixelSize),                    // Width
-			int32(pixelSize),                    // Height
-			rl.NewColor(0, 255, 0, point.Value)) // Value
-	}
-}
-
-func Eventloop3D(drawerFunction func([]Point), points []Point) {
-	// init camera
+func Draw3D(points *[]Point) {
+	// Init camera
 	camera := rl.Camera3D{}
 	camera.Position = rl.NewVector3(10.0, 10.0, 10.0)
-	camera.Target = rl.NewVector3(0.0, 0.0, 0.0)
-	camera.Up = rl.NewVector3(0.0, 1.0, 0.0)
+	camera.Target = rl.NewVector3(CUBE_SIZE*128, CUBE_SIZE*128, CUBE_SIZE*128)
+	camera.Up = rl.NewVector3(0.0, -1.0, 0.0)
 	camera.Fovy = 45.0
 	camera.Projection = rl.CameraPerspective
+
 	for !rl.WindowShouldClose() {
+		rl.HideCursor()
 		rl.ClearBackground(rl.Black)
 		rl.UpdateCamera(&camera, rl.CameraFree)
 		rl.BeginDrawing()
 		rl.BeginMode3D(camera)
-		drawerFunction(points)
+		for _, point := range *points {
+			rl.DrawCube(
+				rl.NewVector3(float32(point.Coordinate[0])*CUBE_SIZE, float32(point.Coordinate[1])*CUBE_SIZE, float32(point.Coordinate[2])*CUBE_SIZE),
+				CUBE_SIZE,
+				CUBE_SIZE,
+				CUBE_SIZE,
+				rl.NewColor(point.Value, point.Value, point.Value, point.Value),
+			)
+		}
 		rl.EndMode3D()
+		rl.DrawFPS(10, 10)
+		// draw debug info some text
+		if DEBUG_MODE {
+			DrawDebugText(len(*points))
+		}
 		rl.EndDrawing()
 	}
 }
 
-func Draw3DPoints(points []Point) {
-	for _, point := range points {
-		// TODO fix this at parse-time, I think it's something to do with the newline at the end
-		if len(point.Coordinate) == 0 {
+func Draw4D(points *[]Point) {
+	// TODO fix this at parse-time, I think it's something to do with the newline at the end
+	for _, point := range *points {
+		if point.Coordinate[3] != wValue {
 			continue
 		}
-		// TODO: might want to make the cube size adjustable
 		rl.DrawCube(
-			rl.NewVector3(float32(point.Coordinate[0])/10, float32(point.Coordinate[1])/10, float32(point.Coordinate[2])/10),
-			0.1,
-			0.1,
-			0.1,
-			rl.NewColor(0, 255, 0, point.Value))
+			rl.NewVector3(float32(point.Coordinate[0])*CUBE_SIZE, float32(point.Coordinate[1])*CUBE_SIZE, float32(point.Coordinate[2])*CUBE_SIZE),
+			CUBE_SIZE,
+			CUBE_SIZE,
+			CUBE_SIZE,
+			rl.NewColor(point.Value, point.Value, point.Value, 255),
+		)
 	}
-}
-
-func Draw4DPoints(points []Point) {
-	// like drawing 3D but with a slider for the W axis (0..255) and it just draws the points with W = slider value
-	// probably...
-	fmt.Println("4D")
+	wValue = uint8(rg.SliderBar(rl.NewRectangle(20.0, 20.0, 100, 20.0), "W=0", "W=255", 0.0, 0.0, 255.0))
 }
 
 func main() {
 	// the first argument is the file name
 	// TODO proper arg handling
+	startRead := time.Now()
 	lines := ReadLines(os.Args[1])
+	fmt.Println("Read file in", time.Since(startRead))
 	ParseVizFileHeader(lines)
-	points := ParseVizFilePoints(lines)
-	fmt.Println("File:         ", os.Args[1])
-	fmt.Println("Dimension:    ", dimension)
-	fmt.Println("No. of points:", len(points))
 
-	var drawerFunction func([]Point)
-	var eventLoop func(func([]Point), []Point)
+	startParse := time.Now()
+
+	points := ParseVizFilePoints(lines)
+	points = FilterPoints(points)
+
+	var drawerFunction func(*[]Point)
 	// probably too many code paths here, might find a better way to do this
 	switch dimension {
 	case 2:
-		eventLoop = Eventloop2D
-		drawerFunction = Draw2DPoints
+		drawerFunction = Draw2D
 	case 3:
-		eventLoop = Eventloop3D
-		drawerFunction = Draw3DPoints
+		drawerFunction = Draw3D
 	case 4:
-		eventLoop = Eventloop3D
-		drawerFunction = Draw4DPoints
-	default:
-		fmt.Println("what the fuck")
+		drawerFunction = Draw4D
 	}
+
 	// Raylib initialisation
-	rl.InitWindow(screenWidth, screenHeight, "binvizualiser")
-	eventLoop(drawerFunction, points)
+	rl.InitWindow(0, 0, "binvizualiser")
+	rl.SetConfigFlags(rl.FlagBorderlessWindowedMode | rl.FlagWindowMousePassthrough | rl.FlagWindowUndecorated)
+	rl.SetWindowState(rl.FlagBorderlessWindowedMode | rl.FlagWindowMousePassthrough | rl.FlagWindowUndecorated)
+	rl.ToggleFullscreen()
+	fmt.Println("Parsed file in", time.Since(startParse))
+	fmt.Println("File:         ", os.Args[1])
+	fmt.Println("Dimension:    ", dimension)
+	fmt.Println("No. of points:", len(points))
+	drawerFunction(&points)
+	// TODO: common drawing function / event loop stuff
+	// TODO: GUI for configuration of the visualisation (dimension, max points, etc.)
 }
